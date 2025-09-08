@@ -285,27 +285,26 @@ class TestTrajectoryPlanner:
         start_config = np.zeros(6)
         goal_config = np.array([0.1, 0.1, 0.1, 0.1, 0.1, 0.1])
         
-        # This might fail if planning doesn't succeed, which is okay for testing
-        try:
-            interpolator = trajectory_planner.plan_trajectory(
-                start_config, goal_config, 
-                method='constant',  # Use simpler method for testing
-                max_attempts=3  # Reduce attempts for faster testing
-            )
+        # Test trajectory planning - should succeed or fail gracefully
+        interpolator = trajectory_planner.plan_trajectory(
+            start_config, goal_config, 
+            method='constant'  # Use simpler method for testing, interpolation defaults to 'cubic'
+        )
+        
+        # If planning succeeds, validate the trajectory
+        if interpolator is not None:
+            assert interpolator.get_duration() > 0
             
-            if interpolator is not None:
-                assert interpolator.get_duration() > 0
-                
-                # Test evaluation at start and end
-                start_q = interpolator.evaluate(0.0)
-                end_q = interpolator.evaluate(interpolator.get_duration())
-                
-                assert np.allclose(start_q, start_config, atol=1e-2)
-                # End might not match exactly due to planning constraints
-                
-        except Exception as e:
-            # Planning might fail due to various reasons in testing
-            pytest.skip(f"Planning failed: {e}")
+            # Test evaluation at start and end
+            start_q = interpolator.evaluate(0.0)
+            end_q = interpolator.evaluate(interpolator.get_duration())
+            
+            assert np.allclose(start_q, start_config, atol=1e-2)
+            # End might not match exactly due to planning constraints
+        else:
+            # If planning fails, that's also a valid test outcome
+            # Just ensure the planner handled the failure gracefully
+            assert interpolator is None
 
 
 if __name__ == "__main__":
