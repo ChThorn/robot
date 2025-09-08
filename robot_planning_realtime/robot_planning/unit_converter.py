@@ -300,7 +300,21 @@ class ProductionUnitHandler:
         # Get joint limits in radians from robot
         joint_limits_rad = self.robot_controller.robot.joint_limits
         
-        for i, (q, (q_min, q_max)) in enumerate(zip(q_rad, joint_limits_rad)):
+        # Handle different joint limits formats
+        if isinstance(joint_limits_rad, np.ndarray) and joint_limits_rad.shape == (2, 6):
+            # Format: [[lower_limits], [upper_limits]]
+            lower_limits = joint_limits_rad[0]
+            upper_limits = joint_limits_rad[1]
+        elif isinstance(joint_limits_rad, (list, tuple)) and len(joint_limits_rad) > 0:
+            # Format: [(min1, max1), (min2, max2), ...]
+            lower_limits = np.array([limits[0] for limits in joint_limits_rad])
+            upper_limits = np.array([limits[1] for limits in joint_limits_rad])
+        else:
+            logger.warning(f"Unexpected joint limits format: {joint_limits_rad}")
+            return False
+        
+        # Validate each joint
+        for i, (q, q_min, q_max) in enumerate(zip(q_rad, lower_limits, upper_limits)):
             if not (q_min <= q <= q_max):
                 logger.warning(f"Joint {i} angle {np.rad2deg(q):.1f}° outside limits "
                              f"[{np.rad2deg(q_min):.1f}°, {np.rad2deg(q_max):.1f}°]")

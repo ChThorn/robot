@@ -53,8 +53,8 @@ class PlanningConstraints:
     max_planning_time: float = 2.0  # Maximum planning time in seconds
     max_ik_time_per_pose: float = 0.1  # Maximum IK time per pose
     max_path_length: int = 20  # Maximum number of waypoints
-    position_tolerance: float = 0.001  # Position tolerance in meters
-    orientation_tolerance: float = 0.05  # Orientation tolerance in radians
+    position_tolerance: float = 0.002  # Production position tolerance: 2mm
+    orientation_tolerance: float = 0.005  # Production orientation tolerance: 0.29°
     joint_velocity_limit: float = 2.0  # Joint velocity limit in rad/s
     workspace_margin: float = 0.05  # Workspace margin in meters
 
@@ -113,28 +113,48 @@ class KinematicValidator:
         
         # Fast IK with timeout
         try:
-            # Set strict timeout for IK
+            # Set production-grade IK parameters for accuracy
             original_params = self.robot_controller.ik_params.copy()
             self.robot_controller.set_ik_parameters(
-                max_iters=100,  # Reduced iterations for speed
+                max_iters=300,  # Production-grade iterations for precision
                 pos_tol=self.constraints.position_tolerance,
                 rot_tol=self.constraints.orientation_tolerance
             )
             
             # Use timeout wrapper for IK
-            q_solution, success = self._ik_with_timeout(
+            ik_result = self._ik_with_timeout(
                 pose, q_seed, self.constraints.max_ik_time_per_pose
             )
             
+            # Handle different return formats
+            if ik_result is None or not isinstance(ik_result, tuple):
+                q_solution, success = None, False
+            elif len(ik_result) == 2:
+                q_solution, success = ik_result
+            else:
+                logger.warning(f"Unexpected IK result: {ik_result}")
+                q_solution, success = None, False
+            
             # Restore original parameters
-            self.robot_controller.set_ik_parameters(**original_params)
+            try:
+                self.robot_controller.set_ik_parameters(**original_params)
+                logger.debug("Parameter restoration successful")
+            except Exception as e:
+                logger.warning(f"Parameter restoration failed: {e}")
+                return False, None
             
             if success and q_solution is not None:
                 # Validate joint limits and velocities
-                if self._validate_joint_config(q_solution, q_seed):
-                    # Cache successful solution
-                    self.ik_cache[pose_key] = q_solution
-                    return True, q_solution
+                try:
+                    validation_result = self._validate_joint_config(q_solution, q_seed)
+                    logger.debug(f"Joint validation result: {validation_result}")
+                    if validation_result:
+                        # Cache successful solution
+                        self.ik_cache[pose_key] = q_solution
+                        return True, q_solution
+                except Exception as e:
+                    logger.warning(f"Joint validation failed: {e}")
+                    return False, None
             
             return False, None
             
@@ -167,11 +187,27 @@ class KinematicValidator:
         
         def ik_worker():
             try:
-                q, success = self.unit_handler.inverse_kinematics_planning_units(pose, q_seed)
-                result[0] = q
-                result[1] = success
+                ik_result = self.unit_handler.inverse_kinematics_planning_units(pose, q_seed)
+                logger.debug(f"IK worker - result type: {type(ik_result)}")
+                logger.debug(f"IK worker - result length: {len(ik_result) if hasattr(ik_result, '__len__') else 'N/A'}")
+                logger.debug(f"IK worker - result value: {ik_result}")
+                
+                if ik_result is None:
+                    result[0] = None
+                    result[1] = False
+                elif isinstance(ik_result, tuple) and len(ik_result) == 2:
+                    result[0] = ik_result[0]
+                    result[1] = ik_result[1]
+                    logger.debug(f"IK success: {ik_result[1]}, q: {ik_result[0] is not None}")
+                else:
+                    logger.warning(f"Unexpected IK result format: {type(ik_result)}, length: {len(ik_result) if hasattr(ik_result, '__len__') else 'N/A'}")
+                    result[0] = None
+                    result[1] = False
             except Exception as e:
-                logger.debug(f"IK worker exception: {e}")
+                logger.warning(f"IK worker exception: {e}")
+                import traceback
+                logger.debug(f"IK worker traceback: {traceback.format_exc()}")
+                result[0] = None
                 result[1] = False
         
         thread = threading.Thread(target=ik_worker)
@@ -185,6 +221,19 @@ class KinematicValidator:
             return None, False
         
         return result[0], result[1]
+    
+    def _ensure_pose_matrix(self, pose: np.ndarray) -> np.ndarray:
+        """Convert position array to 4x4 pose matrix if needed."""
+        if pose.shape == (3,):
+            # Convert 3D position to 4x4 pose matrix with identity rotation
+            T = np.eye(4)
+            T[:3, 3] = pose
+            return T
+        elif pose.shape == (4, 4):
+            # Already a 4x4 matrix
+            return pose
+        else:
+            raise ValueError(f"Invalid pose shape: {pose.shape}. Expected (3,) or (4,4)")
     
     def _validate_joint_config(self, q: np.ndarray, q_prev: np.ndarray = None) -> bool:
         """Validate joint configuration against limits and velocity constraints."""
@@ -402,12 +451,16 @@ class ProductionMotionPlanner:
         Plan Cartesian path with real-time constraints.
         
         Args:
-            start_pose: Start pose in planning units (4x4 matrix)
-            goal_pose: Goal pose in planning units (4x4 matrix)
+            start_pose: Start pose - either 3D position array or 4x4 matrix
+            goal_pose: Goal pose - either 3D position array or 4x4 matrix
             
         Returns:
             Tuple of (result, cartesian_path, metrics)
         """
+        # Convert position arrays to 4x4 pose matrices if needed
+        start_pose = self._ensure_pose_matrix(start_pose)
+        goal_pose = self._ensure_pose_matrix(goal_pose)
+        
         logger.info("Starting real-time Cartesian path planning")
         
         result, path, metrics = self.planner.plan(start_pose, goal_pose)
@@ -431,12 +484,16 @@ class ProductionMotionPlanner:
         Plan with automatic fallback strategies for production robustness.
         
         Args:
-            start_pose: Start pose in planning units
-            goal_pose: Goal pose in planning units
+            start_pose: Start pose - either 3D position array or 4x4 matrix
+            goal_pose: Goal pose - either 3D position array or 4x4 matrix
             
         Returns:
             Tuple of (result, path, metrics)
         """
+        # Convert position arrays to 4x4 pose matrices if needed
+        start_pose = self._ensure_pose_matrix(start_pose)
+        goal_pose = self._ensure_pose_matrix(goal_pose)
+        
         # Try primary planning
         result, path, metrics = self.plan_cartesian_path_realtime(start_pose, goal_pose)
         
@@ -510,4 +567,17 @@ class ProductionMotionPlanner:
             'cache_performance': cache_stats,
             'workspace_bounds': self.validator.workspace_bounds
         }
+    
+    def _ensure_pose_matrix(self, pose: np.ndarray) -> np.ndarray:
+        """Convert position array to 4x4 pose matrix if needed."""
+        if pose.shape == (3,):
+            # Convert 3D position to 4x4 pose matrix with identity rotation
+            T = np.eye(4)
+            T[:3, 3] = pose
+            return T
+        elif pose.shape == (4, 4):
+            # Already a 4x4 matrix
+            return pose
+        else:
+            raise ValueError(f"Invalid pose shape: {pose.shape}. Expected (3,) or (4,4)")
 

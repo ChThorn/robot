@@ -428,7 +428,16 @@ class MotionPlanner:
         self.unit_handler = ProductionUnitHandler(robot_controller)
         self.robot_env = RobotEnvironment(robot_controller)
         self.joint_space_planner = JointSpacePlanner(robot_controller)
-        self.cartesian_path_planner = CartesianPathPlanner(self.robot_env, robot_controller) # Pass robot_controller
+        # Initialize Cartesian planner with production-grade parameters
+        self.cartesian_path_planner = CartesianPathPlanner(
+            self.robot_env, 
+            robot_controller,
+            max_iterations=2000,    # High-quality planning
+            step_size=0.08,         # Precision steps for production
+            goal_bias=0.12,         # Balanced exploration/exploitation
+            connect_threshold=0.12, # Tight connections for smooth paths
+            rewire_radius=0.2       # Optimal path optimization
+        )
         
         logger.info("MotionPlanner initialized with production unit handling")
         
@@ -666,5 +675,178 @@ class MotionPlanner:
                     return None
                 return head
             return [q_mid] + tail
+
+    # ==========================================================================
+    # ROBOT API INTERFACE METHODS (Degrees and Millimeters)
+    # ==========================================================================
+    
+    def plan_joint_path_robot_units(self, start_joints_deg: np.ndarray, goal_joints_deg: np.ndarray) -> Optional[List[np.ndarray]]:
+        """
+        Plan joint space path using robot API units (degrees).
+        
+        Args:
+            start_joints_deg: Start joint angles in degrees [6 joints]
+            goal_joints_deg: Goal joint angles in degrees [6 joints]
+            
+        Returns:
+            List of joint configurations in degrees, or None if planning fails
+        """
+        # Convert degrees to radians for internal planning
+        start_joints_rad = np.deg2rad(start_joints_deg)
+        goal_joints_rad = np.deg2rad(goal_joints_deg)
+        
+        # Plan in internal units (radians)
+        joint_path_rad = self.plan_joint_path(start_joints_rad, goal_joints_rad)
+        
+        if joint_path_rad is None:
+            return None
+            
+        # Convert back to degrees for robot API
+        joint_path_deg = [np.rad2deg(q) for q in joint_path_rad]
+        
+        logger.info(f"Joint path planned: {len(joint_path_deg)} waypoints in degrees")
+        return joint_path_deg
+    
+    def plan_cartesian_path_robot_units(self, start_pose_robot: np.ndarray, goal_pose_robot: np.ndarray) -> Optional[Tuple[List[np.ndarray], List[np.ndarray]]]:
+        """
+        Plan Cartesian space path using robot API units (mm and degrees).
+        
+        Args:
+            start_pose_robot: Start pose [x_mm, y_mm, z_mm, rx_deg, ry_deg, rz_deg]
+            goal_pose_robot: Goal pose [x_mm, y_mm, z_mm, rx_deg, ry_deg, rz_deg]
+            
+        Returns:
+            Tuple of (cartesian_path_robot_units, joint_path_robot_units) or None if planning fails
+            - cartesian_path_robot_units: List of poses in robot units [x_mm, y_mm, z_mm, rx_deg, ry_deg, rz_deg]
+            - joint_path_robot_units: List of joint configurations in degrees
+        """
+        # Convert robot units to internal planning units
+        start_pose_planning = self._robot_pose_to_planning_units(start_pose_robot)
+        goal_pose_planning = self._robot_pose_to_planning_units(goal_pose_robot)
+        
+        # Plan in internal units
+        result = self.plan_cartesian_path(start_pose_planning, goal_pose_planning)
+        
+        if result is None:
+            return None
+            
+        cartesian_path_planning, joint_path_rad = result
+        
+        # Convert back to robot units
+        cartesian_path_robot = [self._planning_pose_to_robot_units(T) for T in cartesian_path_planning]
+        joint_path_deg = [np.rad2deg(q) for q in joint_path_rad]
+        
+        logger.info(f"Cartesian path planned: {len(cartesian_path_robot)} cartesian waypoints, {len(joint_path_deg)} joint waypoints in robot units")
+        return cartesian_path_robot, joint_path_deg
+    
+    def move_joint_robot_api(self, target_joints_deg: np.ndarray, current_joints_deg: np.ndarray = None) -> Optional[List[np.ndarray]]:
+        """
+        Plan path to target joint configuration using robot API units (compatible with move_joint() API).
+        
+        Args:
+            target_joints_deg: Target joint angles in degrees [6 joints]
+            current_joints_deg: Current joint angles in degrees [6 joints]. If None, uses robot's current position
+            
+        Returns:
+            List of joint configurations in degrees for robot execution, or None if planning fails
+        """
+        if current_joints_deg is None:
+            # In a real implementation, this would get current joints from robot
+            # For now, assume zero position
+            current_joints_deg = np.zeros(6)
+            logger.warning("Current joint position not provided, assuming zero position")
+        
+        return self.plan_joint_path_robot_units(current_joints_deg, target_joints_deg)
+    
+    def move_blend_point_robot_api(self, target_pose_robot: np.ndarray, current_pose_robot: np.ndarray = None) -> Optional[Tuple[List[np.ndarray], List[np.ndarray]]]:
+        """
+        Plan path to target Cartesian pose using robot API units (compatible with move_blend_point() API).
+        
+        Args:
+            target_pose_robot: Target pose [x_mm, y_mm, z_mm, rx_deg, ry_deg, rz_deg]
+            current_pose_robot: Current pose [x_mm, y_mm, z_mm, rx_deg, ry_deg, rz_deg]. If None, uses robot's current position
+            
+        Returns:
+            Tuple of (cartesian_path_robot_units, joint_path_robot_units) or None if planning fails
+        """
+        if current_pose_robot is None:
+            # In a real implementation, this would get current pose from robot
+            # For now, assume a default pose
+            current_pose_robot = np.array([0.0, -6.5, 877.0, 0.0, 0.0, 0.0])  # Example from JSON data
+            logger.warning("Current pose not provided, assuming default pose")
+        
+        return self.plan_cartesian_path_robot_units(current_pose_robot, target_pose_robot)
+    
+    def validate_robot_data_format(self, json_data_path: str) -> Dict[str, bool]:
+        """
+        Validate that the planning system can handle real robot data format.
+        
+        Args:
+            json_data_path: Path to JSON file with real robot data
+            
+        Returns:
+            Dictionary with validation results
+        """
+        try:
+            import json
+            with open(json_data_path, 'r') as f:
+                data = json.load(f)
+            
+            results = {
+                'json_loaded': True,
+                'has_waypoints': 'waypoints' in data,
+                'has_joint_positions': False,
+                'has_tcp_position': False,
+                'joint_units_valid': False,
+                'tcp_units_valid': False
+            }
+            
+            if results['has_waypoints'] and len(data['waypoints']) > 0:
+                first_waypoint = data['waypoints'][0]
+                
+                # Check joint positions
+                if 'joint_positions' in first_waypoint:
+                    results['has_joint_positions'] = True
+                    joints = np.array(first_waypoint['joint_positions'])
+                    # Real robot joints should be in reasonable degree range
+                    results['joint_units_valid'] = np.all(np.abs(joints) < 360)  # Reasonable degree range
+                
+                # Check TCP position  
+                if 'tcp_position' in first_waypoint:
+                    results['has_tcp_position'] = True
+                    tcp = np.array(first_waypoint['tcp_position'])
+                    # Real robot TCP should be in mm range (positions > 100, < 2000)
+                    results['tcp_units_valid'] = (len(tcp) >= 6 and 
+                                                tcp[2] > 100 and tcp[2] < 2000)  # Z position in mm range
+            
+            logger.info(f"Robot data validation: {results}")
+            return results
+            
+        except Exception as e:
+            logger.error(f"Failed to validate robot data: {e}")
+            return {'error': str(e)}
+    
+    # ==========================================================================
+    # INTERNAL UNIT CONVERSION HELPERS
+    # ==========================================================================
+    
+    def _robot_pose_to_planning_units(self, pose_robot: np.ndarray) -> np.ndarray:
+        """Convert robot API pose [x_mm, y_mm, z_mm, rx_deg, ry_deg, rz_deg] to planning units [x_m, y_m, z_m, rx_rad, ry_rad, rz_rad]."""
+        pose_planning = pose_robot.copy()
+        pose_planning[:3] = pose_robot[:3] / 1000.0  # mm to meters
+        pose_planning[3:] = np.deg2rad(pose_robot[3:])  # degrees to radians
+        return pose_planning
+    
+    def _planning_pose_to_robot_units(self, T_planning: np.ndarray) -> np.ndarray:
+        """Convert planning 4x4 matrix to robot API format [x_mm, y_mm, z_mm, rx_deg, ry_deg, rz_deg]."""
+        # Extract position (convert m to mm)
+        pos_mm = T_planning[:3, 3] * 1000.0
+        
+        # Extract rotation (convert to RPY in degrees)
+        R = T_planning[:3, :3]
+        rpy_rad = self.robot_controller.robot.matrix_to_rpy(R)
+        rpy_deg = np.rad2deg(rpy_rad)
+        
+        return np.concatenate([pos_mm, rpy_deg])
 
 

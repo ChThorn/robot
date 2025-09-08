@@ -117,11 +117,11 @@ class CartesianPathPlanner:
     
     def __init__(self, environment: Environment3D, 
                  robot_controller: 'Optional[RobotController]' = None,
-                 max_iterations: int = 1000,
-                 step_size: float = 0.15,
-                 goal_bias: float = 0.2,
-                 connect_threshold: float = 0.2,
-                 rewire_radius: float = 0.3):
+                 max_iterations: int = 2000,  # Production-grade: More iterations for quality
+                 step_size: float = 0.1,      # Production-grade: Smaller steps for precision
+                 goal_bias: float = 0.15,     # Production-grade: Balanced exploration
+                 connect_threshold: float = 0.15,  # Production-grade: Tighter connections
+                 rewire_radius: float = 0.25):     # Production-grade: Optimized rewiring
         """
         Initialize AORRTC path planner.
         
