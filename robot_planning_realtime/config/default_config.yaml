@@ -1,0 +1,35 @@
+# Default configuration for robot planning
+
+# AORRTC Planning Parameters (Optimized for speed)
+max_iterations: 1000
+step_size: 0.15
+goal_bias: 0.2
+connect_threshold: 0.2
+rewire_radius: 0.3
+line_bias: 0.4
+patience_no_improve: 300
+max_time: 2.0
+
+# Trajectory Constraints
+max_joint_velocities: [3.0, 3.0, 3.0, 3.0, 3.0, 3.0]  # rad/s
+max_joint_accelerations: [10.0, 10.0, 10.0, 10.0, 10.0, 10.0]  # rad/s²
+max_cartesian_velocity: 1.0  # m/s
+max_cartesian_acceleration: 5.0  # m/s²
+
+# Visualization Parameters
+show_trees: true
+show_path: true
+show_obstacles: true
+animation_speed: 0.1
+
+# Safety Parameters
+joint_limit_margin: 0.05  # 5% margin from joint limits
+workspace_margin: 0.01    # 1cm margin from workspace bounds
+
+# Performance Parameters (Optimized)
+use_parallel_planning: false
+max_planning_threads: 4
+planning_timeout: 5.0  # seconds
+max_cartesian_waypoints: 25  # Limit waypoints for faster IK conversion
+simplify_path: true
+
