@@ -55,3 +55,17 @@ Based on this comprehensive review, the `robot_planning_realtime` package is **p
 
 Overall, the `robot_planning_realtime` package is a well-engineered and robust motion planning library that is ready for production use. The development team has clearly put a lot of effort into creating a high-quality and reliable system.
 
+# 🌟: **Notice**: The following needs to check again and reconsidered (not yet done properly at this part):
+
+`python3 examples/realtime_demo.py`
+
+The results are not yet satisfactory since the Real-Time rate is still: `0/3` or sometime `1/3` owing the randomly path. So, we have to make it surely `3/3` if possible.
+
+```text
+============================================================
+📈 PERFORMANCE SUMMARY
+============================================================
+Success rate: 3/3 (100.0%)
+Real-time rate: 0/3 (0.0%)
+Average planning time: 1.802s
+```
